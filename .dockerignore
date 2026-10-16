@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+.deploy-lock
+.env*
+.git
+.idea
+.vscode
+.impeccable
+output
+test-results
+.playwright-cli

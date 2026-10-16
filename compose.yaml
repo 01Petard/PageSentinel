@@ -1,0 +1,22 @@
+services:
+  pagesentinel:
+    build: .
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      HOST: 0.0.0.0
+      PUBLIC_HOST: ${PUBLIC_HOST:-}
+      DATA_DIR: /app/data
+      NTFY_URL: ${NTFY_URL:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+    volumes:
+      - ./data:/app/data
+    shm_size: 512mb
+    stop_grace_period: 90s
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, SETUID, SETGID, CHOWN, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./docker/seccomp_profile.json
