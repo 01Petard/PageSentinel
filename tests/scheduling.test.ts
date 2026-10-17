@@ -185,7 +185,7 @@ test("schema upgrade preserves legacy rows and an obsolete global preference can
     assert.deepEqual(restored.settings(), { refreshingAll: false });
     assert.equal(restored.get(id).enabled, true);
     assert.equal(restored.checks(id).total, 1);
-    assert.equal(db.pragma("user_version", { simple: true }), 2);
+    assert.equal(db.pragma("user_version", { simple: true }), 3);
   } finally {
     db.close();
     await browser.close();

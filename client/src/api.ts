@@ -7,23 +7,97 @@ import type {
   ChangeEvent,
   CheckRun,
   CurrentContent,
+  AuthProfileInput,
+  AuthProfileSummary,
+  AccountAction,
+  CaptureSummary,
+  ManagementSession,
 } from "../../shared/types";
+import { reactive } from "vue";
+
+export const managementSession = reactive<
+  ManagementSession & { loaded: boolean }
+>({ required: false, unlocked: false, loaded: false });
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...init,
     headers: {
       ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...(managementSession.csrfToken
+        ? { "x-csrf-token": managementSession.csrfToken }
+        : {}),
       ...init?.headers,
     },
   });
   if (!response.ok) {
+    if (response.status === 401 && managementSession.required) {
+      managementSession.unlocked = false;
+      managementSession.csrfToken = undefined;
+    }
     const error = await response.json().catch(() => null);
     throw new Error(error?.message ?? "无法连接服务，请稍后重试。");
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }
 export const api = {
+  session: async () => {
+    const value = await request<ManagementSession>("/admin/session");
+    Object.assign(managementSession, {
+      csrfToken: undefined,
+      ...value,
+      loaded: true,
+    });
+    return value;
+  },
+  unlock: async (token: string) => {
+    const value = await request<ManagementSession>("/admin/session", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    Object.assign(managementSession, { ...value, loaded: true });
+    return value;
+  },
+  logout: async () => {
+    await request<void>("/admin/session", { method: "DELETE" });
+    Object.assign(managementSession, { unlocked: false, csrfToken: undefined });
+  },
+  profiles: () => request<AuthProfileSummary[]>("/auth-profiles"),
+  createProfile: (input: AuthProfileInput) =>
+    request<AuthProfileSummary>("/auth-profiles", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateProfile: (id: string, input: Partial<AuthProfileInput>) =>
+    request<AuthProfileSummary>(`/auth-profiles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  importProfile: (id: string, input: string, accountAction: AccountAction) =>
+    request<AuthProfileSummary>(`/auth-profiles/${id}/import`, {
+      method: "POST",
+      body: JSON.stringify({ input, accountAction }),
+    }),
+  verifyProfile: (id: string) =>
+    request<AuthProfileSummary>(`/auth-profiles/${id}/verify`, {
+      method: "POST",
+    }),
+  revokeProfile: (id: string) =>
+    request<AuthProfileSummary>(`/auth-profiles/${id}/revoke`, {
+      method: "POST",
+    }),
+  deleteProfile: (id: string) =>
+    request<void>(`/auth-profiles/${id}`, { method: "DELETE" }),
+  startCapture: (id: string, accountAction: AccountAction) =>
+    request<CaptureSummary & { pairingCode: string }>(
+      `/auth-profiles/${id}/captures`,
+      { method: "POST", body: JSON.stringify({ accountAction }) },
+    ),
+  capture: (id: string) => request<CaptureSummary>(`/auth-captures/${id}`),
+  saveCapture: (id: string) =>
+    request<CaptureSummary>(`/auth-captures/${id}/save`, { method: "POST" }),
+  cancelCapture: (id: string) =>
+    request<CaptureSummary>(`/auth-captures/${id}`, { method: "DELETE" }),
   health: () => request<{ status: string; ntfyConfigured: boolean }>("/health"),
   settings: () => request<{ refreshingAll: boolean }>("/settings"),
   list: () => request<Monitor[]>("/monitors"),
@@ -55,7 +129,10 @@ export const api = {
       { method: "POST" },
     ),
   checkAll: () =>
-    request<{ total: number }>("/monitors/check-all", { method: "POST" }),
+    request<{ total: number; blocked: { id: string; status: string }[] }>(
+      "/monitors/check-all",
+      { method: "POST" },
+    ),
   events: (id: string, pageIndex = 1) =>
     request<PageResult<ChangeEvent>>(
       `/monitors/${encodeURIComponent(id)}/events?pageIndex=${pageIndex}`,
@@ -72,6 +149,10 @@ export const statusLabel: Record<string, string> = {
   UNCHANGED: "无变化",
   CHANGED: "发现变化",
   FAILED: "检查失败",
+  AUTH_REQUIRED: "需要重新登录",
+  AUTH_UNVERIFIED: "登录标记未通过",
+  AUTH_UPDATED: "登录授权已更新",
+  AUTH_REVOKED: "登录授权已清除",
 };
 export function formatTime(value: number | null) {
   return value

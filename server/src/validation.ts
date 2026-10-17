@@ -31,6 +31,11 @@ export const ruleShape = {
     .union([selector, z.literal("")])
     .transform((s) => s || undefined)
     .optional(),
+  authProfileId: z.uuid().nullable().optional(),
+  authSuccessSelector: z
+    .union([selector, z.literal("")])
+    .transform((s) => s || undefined)
+    .optional(),
 };
 const ruleSchema = z.strictObject(ruleShape);
 const intervalSchema = z.number().int().min(1).max(1500);
@@ -38,6 +43,7 @@ const inputSchema = ruleSchema.extend({
   name: z.string().trim().min(1).max(120),
   intervalMinutes: intervalSchema.default(30),
   enabled: z.boolean().default(true),
+  notificationPolicy: z.enum(["SUMMARY", "FULL"]).optional(),
 });
 // Creation defaults must not turn omitted PATCH fields into updates.
 const patchSchema = inputSchema

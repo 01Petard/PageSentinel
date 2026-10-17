@@ -11,6 +11,8 @@ services:
       DATA_DIR: /app/data
       NTFY_URL: ${NTFY_URL:-}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      AUTH_MASTER_KEY: ${AUTH_MASTER_KEY:-}
     volumes:
       - ./data:/app/data
     shm_size: 512mb

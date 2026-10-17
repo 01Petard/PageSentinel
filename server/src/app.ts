@@ -11,6 +11,11 @@ import { Scheduler } from "./monitor/scheduler.js";
 import { NotificationWorker } from "./notification/ntfy.js";
 import { AppError } from "./errors.js";
 import { validateInput, validatePatch, validateRule } from "./validation.js";
+import { installManagementAuth } from "./auth/management-auth.js";
+import { AuthProfileService } from "./auth/auth-profile-service.js";
+import { registerAuthRoutes } from "./auth/routes.js";
+import { AuthSessionService } from "./auth/auth-session-service.js";
+import { LoginCaptureService } from "./auth/login-capture.js";
 
 export interface AppOptions {
   databasePath?: string;
@@ -23,10 +28,20 @@ export interface AppOptions {
   ntfyToken?: string;
   staticRoot?: string;
   allowedHostnames?: string[];
+  adminToken?: string;
+  authMasterKey?: string;
 }
 export async function createApp(options: AppOptions = {}) {
   const app = Fastify({
-    logger: options.logger ?? false,
+    logger: options.logger
+      ? {
+          redact: [
+            "req.headers.authorization",
+            "req.headers.cookie",
+            "res.headers.set-cookie",
+          ],
+        }
+      : false,
     bodyLimit: 64 * 1024,
     requestTimeout: 90_000,
   });
@@ -35,14 +50,6 @@ export async function createApp(options: AppOptions = {}) {
   );
   const browser =
     options.collector ?? new BrowserCollector(options.browserOptions);
-  const service = new MonitorService(db, browser, {
-    concurrency: options.concurrency,
-  });
-  const scheduler = new Scheduler(db, service);
-  const notifications = new NotificationWorker(db, {
-    target: options.ntfyTarget,
-    token: options.ntfyToken,
-  });
   await app.register(rateLimit, {
     // Polling several open views must not consume the manual-action allowance.
     max: (request) => (["GET", "HEAD"].includes(request.method) ? 600 : 180),
@@ -91,6 +98,31 @@ export async function createApp(options: AppOptions = {}) {
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     );
   });
+  let security: ReturnType<typeof installManagementAuth>;
+  try {
+    security = installManagementAuth(app, db, options);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  const profiles = new AuthProfileService(db, browser, security.key);
+  const authSessions = new AuthSessionService(profiles);
+  const service = new MonitorService(db, browser, {
+    concurrency: options.concurrency,
+    authSessions,
+  });
+  profiles.withIdentity = (id, operation) =>
+    authSessions.withLock(id, operation);
+  profiles.runVerification = (id, profile, state) =>
+    service.verifyProfile(id, profile, state);
+  profiles.onVerified = (id) => service.recoverProfile(id);
+  const scheduler = new Scheduler(db, service);
+  const notifications = new NotificationWorker(db, {
+    target: options.ntfyTarget,
+    token: options.ntfyToken,
+  });
+  const captures = new LoginCaptureService(profiles);
+  registerAuthRoutes(app, profiles, captures);
   app.setErrorHandler(
     (error: Error & { statusCode?: number }, _request, reply) => {
       if (error instanceof AppError)
@@ -127,7 +159,9 @@ export async function createApp(options: AppOptions = {}) {
   };
   app.get("/api/health", async () => ({
     status: "ok",
-    ntfyConfigured: Boolean(options.ntfyTarget),
+    ...(!security.required
+      ? { ntfyConfigured: Boolean(options.ntfyTarget) }
+      : {}),
   }));
   app.get("/api/settings", async () => service.settings());
   app.get("/api/updates", async (request) => {
@@ -206,6 +240,7 @@ export async function createApp(options: AppOptions = {}) {
   }
   app.addHook("onClose", async () => {
     scheduler.stop();
+    await captures.stop();
     await service.stop();
     await notifications.stop();
     await browser.close();
@@ -215,5 +250,5 @@ export async function createApp(options: AppOptions = {}) {
     scheduler.start();
     notifications.start();
   }
-  return { app, service, db, scheduler, notifications };
+  return { app, service, db, scheduler, notifications, profiles, captures };
 }

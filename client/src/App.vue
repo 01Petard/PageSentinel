@@ -8,7 +8,8 @@ import {
   dateZhCN,
 } from "naive-ui";
 import { Radar, LayoutGrid, BellRing, BellOff } from "lucide-vue-next";
-import { api } from "./api";
+import { api, managementSession } from "./api";
+import ManagementUnlock from "./components/ManagementUnlock.vue";
 import NotificationCenter from "./components/NotificationCenter.vue";
 import "./notifications.css";
 
@@ -18,7 +19,8 @@ provide("ntfyConfigured", ntfyConfigured);
 let timer: ReturnType<typeof setInterval>;
 async function health() {
   try {
-    ntfyConfigured.value = (await api.health()).ntfyConfigured;
+    const [state] = await Promise.all([api.session(), api.health()]);
+    ntfyConfigured.value = state.ntfyConfigured ?? false;
     connected.value = true;
   } catch {
     connected.value = false;
@@ -64,19 +66,41 @@ const theme = {
               <RouterLink to="/" class="nav-link" aria-label="监控任务"
                 ><LayoutGrid :size="16" /><span>监控任务</span></RouterLink
               >
+              <RouterLink
+                v-if="managementSession.unlocked"
+                to="/auth-profiles"
+                class="nav-link"
+                >登录身份</RouterLink
+              >
             </nav>
             <div class="header-status">
               <span class="local-label"
                 ><span class="state-dot" :class="{ danger: !connected }"></span
                 >{{ connected ? "监控服务运行中" : "监控服务离线" }}</span
               >
-              <NotificationCenter />
+              <NotificationCenter v-if="managementSession.unlocked" />
+              <button
+                v-if="managementSession.required && managementSession.unlocked"
+                class="auth-logout"
+                @click="api.logout()"
+              >
+                锁定
+              </button>
             </div>
           </header>
           <div v-if="!connected" role="alert" class="connection-error">
             暂时无法连接服务，正在自动重试。请确认后端仍在运行。
           </div>
-          <main class="main-content"><RouterView :key="$route.path" /></main>
+          <main class="main-content">
+            <p v-if="!managementSession.loaded" role="status">
+              正在连接管理服务…
+            </p>
+            <ManagementUnlock
+              v-else-if="!managementSession.unlocked"
+              @unlocked="health"
+            />
+            <RouterView v-else :key="$route.path" />
+          </main>
           <footer class="app-footer">
             <span class="footer-motto"
               ><span class="footer-spark"></span>Track what matters.</span

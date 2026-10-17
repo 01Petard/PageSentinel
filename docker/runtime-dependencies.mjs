@@ -19,6 +19,7 @@ const runtimeDependencies = [
   "ipaddr.js",
   "playwright",
   "zod",
+  "tldts",
 ];
 const manifestPath = resolve("package.json");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));

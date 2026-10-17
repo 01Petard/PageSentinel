@@ -71,7 +71,8 @@ const filtered = computed(() =>
       (filter.value === "all" ||
         (filter.value === "enabled" && m.enabled) ||
         (filter.value === "paused" && !m.enabled) ||
-        (filter.value === "failed" && m.lastStatus === "FAILED")),
+        (filter.value === "failed" &&
+          (m.lastStatus === "FAILED" || !!m.authBlockedCode))),
   ),
 );
 let timer: ReturnType<typeof setInterval>,
@@ -101,12 +102,12 @@ async function load() {
 async function checkAll() {
   startingRefresh.value = true;
   try {
-    const { total } = await api.checkAll();
+    const { total, blocked } = await api.checkAll();
     mutationVersion++;
     refreshingAll.value = total > 0;
     message.info(
       total
-        ? `已开始刷新全部 ${total} 个任务，包含已暂停任务`
+        ? `已开始刷新全部 ${total} 个任务，包含已暂停任务${blocked.length ? `；${blocked.length} 个任务因登录阻塞保留原结果` : ""}`
         : "暂无可刷新的任务",
     );
     await load();
@@ -279,13 +280,15 @@ onUnmounted(() => clearInterval(timer));
         <span
           class="status-text"
           :class="{
-            failed: m.lastStatus === 'FAILED' && m.enabled,
+            failed:
+              (m.lastStatus === 'FAILED' || !!m.authBlockedCode) && m.enabled,
             paused: !m.enabled,
           }"
           ><span
             class="state-dot"
             :class="{
-              danger: m.lastStatus === 'FAILED' && m.enabled,
+              danger:
+                (m.lastStatus === 'FAILED' || !!m.authBlockedCode) && m.enabled,
               muted: !m.enabled,
               pulse: m.running,
             }"
@@ -293,11 +296,13 @@ onUnmounted(() => clearInterval(timer));
           >{{
             m.running
               ? "检查中…"
-              : !m.enabled
-                ? "已暂停"
-                : m.lastStatus
-                  ? statusLabel[m.lastStatus]
-                  : "等待首次检查"
+              : m.authBlockedCode
+                ? statusLabel[m.authBlockedCode]
+                : !m.enabled
+                  ? "已暂停"
+                  : m.lastStatus
+                    ? statusLabel[m.lastStatus]
+                    : "等待首次检查"
           }}</span
         ><span :title="formatTime(m.lastCheckedAt)"
           >{{
@@ -305,6 +310,9 @@ onUnmounted(() => clearInterval(timer));
               ? `${statusLabel[m.lastStatus]} · `
               : ""
           }}{{ relativeTime(m.lastCheckedAt) }}</span
+        >
+        <RouterLink v-if="m.authBlockedCode" to="/auth-profiles"
+          >重新登录 / 验证</RouterLink
         >
       </div>
       <div class="monitor-times">
@@ -332,11 +340,13 @@ onUnmounted(() => clearInterval(timer));
             <Clock3 :size="13" />{{
               m.running
                 ? "正在检查"
-                : !m.enabled
-                  ? "仅手动检查"
-                  : m.nextRunAt <= now
-                    ? "等待调度"
-                    : `${formatCountdown(m.nextRunAt, now)}后`
+                : m.authBlockedCode
+                  ? "等待重新授权"
+                  : !m.enabled
+                    ? "仅手动检查"
+                    : m.nextRunAt <= now
+                      ? "等待调度"
+                      : `${formatCountdown(m.nextRunAt, now)}后`
             }}
           </span>
         </div>

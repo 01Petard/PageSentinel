@@ -5,7 +5,18 @@ import { BrowserCollector } from "../server/src/monitor/browser.js";
 import { startFixture } from "./fixtures.js";
 const fixture = await startFixture();
 const seed = process.argv.includes("--seed");
-const { app, service } = await createApp({
+const authMode = process.argv.includes("--auth");
+const { authFixture } = await import("./auth-fixtures.js");
+const auth = authMode ? await authFixture() : null;
+// Disposable acceptance token, never used by production or real identities.
+const authConfig = authMode
+  ? {
+      adminToken: "ui-acceptance-token-not-for-production-2026",
+      authMasterKey: Buffer.alloc(32, 7).toString("base64"),
+    }
+  : {};
+const { app, service, profiles } = await createApp({
+  ...authConfig,
   databasePath: ":memory:",
   collector: new BrowserCollector({
     allowedHosts: ["127.0.0.1"],
@@ -92,6 +103,23 @@ if (seed) {
     `Deletion-only detail: http://127.0.0.1:4173/monitors/${deleted.id}`,
   );
 }
+if (auth) {
+  const p = await profiles.create(auth.profile);
+  await profiles.importState(p.id, auth.cookie(), "SAME_ACCOUNT");
+  const m = service.create({
+    name: "受控 · 私密动态",
+    url: auth.url + "/private",
+    mode: "TEXT",
+    selector: "article",
+    intervalMinutes: 30,
+    enabled: false,
+    authProfileId: p.id,
+  });
+  await service.check(m.id);
+  console.log(
+    `Auth acceptance target: ${auth.url}; management protection enabled`,
+  );
+}
 await app.listen({ port: 4173, host: "127.0.0.1" });
 console.log(
   `UI acceptance: http://127.0.0.1:4173; controlled target: ${fixture.url}`,
@@ -100,5 +128,6 @@ process.on("SIGINT", () => {
   void app
     .close()
     .then(() => fixture.close())
+    .then(() => auth?.close())
     .then(() => process.exit(0));
 });

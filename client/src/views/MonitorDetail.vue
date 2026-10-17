@@ -75,6 +75,7 @@ const current = ref<CurrentContent>({
   }),
   thumbnailFailed = ref(false);
 const checkSourceLabel: Record<CheckSource, string> = {
+  AUTH_CONTROL: "授权操作",
   TASK_CONTROL: "任务开关",
   AUTO: "自动监控",
   MANUAL: "手动检查",
@@ -272,18 +273,47 @@ onUnmounted(() => clearInterval(timer));
         </div>
       </div>
     </div>
+    <section v-if="monitor.authBlockedCode" class="auth-blocked" role="status">
+      <p>
+        {{
+          statusLabel[monitor.authBlockedCode]
+        }}。已保留上次成功内容，自动检查等待重新授权。
+      </p>
+      <RouterLink :to="{ path: '/auth-profiles', query: { monitor: id } }"
+        >重新登录 / 验证身份</RouterLink
+      >
+    </section>
     <NAlert
-      v-if="monitor.lastStatus === 'FAILED'"
+      v-if="!monitor.authBlockedCode && monitor.lastStatus === 'FAILED'"
       type="error"
       class="page-alert"
       :show-icon="false"
       ><strong>最近一次检查失败</strong>
       <p>
-        {{ monitor.lastError }} 已保留上次成功采集的内容。{{
+        {{ monitor.lastError }}
+        {{
+          current.content
+            ? "已保留上次成功采集的内容。"
+            : "尚未成功采集，尚未建立对比基线。"
+        }}{{
           monitor.enabled ? "自动检查将退避重试。" : "可手动立即检查重试。"
         }}
-      </p></NAlert
-    >
+      </p>
+      <template v-if="!monitor.authProfileId">
+        <p>
+          当前使用匿名访问。页面需要登录时，请先配置登录身份；403
+          也可能由站点权限或访问限制引起。
+        </p>
+        <RouterLink :to="{ path: '/auth-profiles', query: { monitor: id } }"
+          >配置登录并重试</RouterLink
+        >
+      </template>
+      <RouterLink
+        v-else
+        :to="{ path: '/auth-profiles', query: { monitor: id } }"
+        >管理登录身份 / 验证后重试</RouterLink
+      >
+    </NAlert>
     <section class="rule-summary" aria-label="规则摘要">
       <div>
         <span>监控模式</span
@@ -306,6 +336,14 @@ onUnmounted(() => clearInterval(timer));
         ><strong>{{
           monitor.enabled ? formatTime(monitor.nextRunAt) : "本任务已暂停"
         }}</strong>
+      </div>
+      <div class="rule-extra">
+        <span>登录方式</span>
+        <RouterLink :to="{ path: '/auth-profiles', query: { monitor: id } }">{{
+          monitor.authProfileId
+            ? "已绑定身份 · 管理登录"
+            : "匿名访问 · 配置登录"
+        }}</RouterLink>
       </div>
       <div
         class="rule-extra"
@@ -348,7 +386,7 @@ onUnmounted(() => clearInterval(timer));
               </p>
             </div>
             <span
-              v-if="monitor.lastStatus === 'FAILED'"
+              v-if="!monitor.authBlockedCode && monitor.lastStatus === 'FAILED'"
               class="content-retained"
               >最近检查失败，显示上次成功内容</span
             >
@@ -529,7 +567,7 @@ onUnmounted(() => clearInterval(timer));
                     : run.status === "DISABLED"
                       ? "已关闭本任务自动检查，仍可手动检查。"
                       : run.status === "FAILED"
-                        ? "本次采集未成功，保留上次有效内容。"
+                        ? "本次采集未成功，未更新内容和对比基线。"
                         : run.status === "BASELINE"
                           ? "首次有效采集，已建立后续对比基线。"
                           : run.status === "CHANGED"

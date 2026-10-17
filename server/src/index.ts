@@ -39,6 +39,8 @@ const config = z
       z.url().optional(),
     ),
     NTFY_TOKEN: z.string().optional(),
+    ADMIN_TOKEN: z.string().optional(),
+    AUTH_MASTER_KEY: z.string().optional(),
   })
   .safeParse(process.env);
 if (!config.success) {
@@ -61,6 +63,8 @@ const { app } = await createApp({
   concurrency: c.CHECK_CONCURRENCY,
   ntfyTarget: c.NTFY_URL,
   ntfyToken: c.NTFY_TOKEN,
+  adminToken: c.ADMIN_TOKEN || undefined,
+  authMasterKey: c.AUTH_MASTER_KEY || undefined,
   allowedHostnames: [c.HOST, ...(c.PUBLIC_HOST ? [c.PUBLIC_HOST] : [])].filter(
     (host) => host !== "0.0.0.0" && host !== "::",
   ),

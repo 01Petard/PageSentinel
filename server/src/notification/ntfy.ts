@@ -30,29 +30,47 @@ export class NotificationWorker {
       WHERE notification_status = 'PENDING' AND next_notification_at <= ? ORDER BY e.id LIMIT 20`,
       )
       .all(Date.now()) as any[];
-    for (const row of rows) {
+    const alerts = this.db
+      .prepare(
+        `SELECT a.*,m.config_json FROM auth_alerts a JOIN monitors m ON m.id=a.monitor_id
+      WHERE a.status='PENDING' AND a.next_attempt_at<=? AND m.auth_blocked_code IS NOT NULL ORDER BY a.id LIMIT 20`,
+      )
+      .all(Date.now()) as any[];
+    for (const row of [
+      ...rows.map((r) => ({ ...r, kind: "CHANGE" })),
+      ...alerts.map((r) => ({ ...r, kind: "AUTH" })),
+    ]) {
+      const authAlert = row.kind === "AUTH";
       if (this.stopping) break;
       if (
         !this.db
           .prepare(
-            "SELECT id FROM change_events WHERE id = ? AND notification_status = 'PENDING'",
+            authAlert
+              ? "SELECT id FROM auth_alerts WHERE id=? AND status='PENDING'"
+              : "SELECT id FROM change_events WHERE id = ? AND notification_status = 'PENDING'",
           )
           .get(row.id)
       )
         continue;
-      const event = eventFromRow(row),
+      const event = authAlert ? null : eventFromRow(row),
         monitor = JSON.parse(row.config_json);
-      const body =
-        event.detail.mode === "LIST"
-          ? event.detail.items.map((i) => `${i.title}\n${i.url}`).join("\n\n")
-          : event.detail.diff
+      const body = authAlert
+        ? "需要重新登录，请打开 PageSentinel 处理。"
+        : event!.detail.mode === "LIST"
+          ? event!.detail.items.map((i) => `${i.title}\n${i.url}`).join("\n\n")
+          : event!.detail.diff
               .map(
                 (part) =>
                   `${part.added ? "+" : part.removed ? "-" : " "}${part.value}`,
               )
               .join("");
       const bytes = Buffer.from(
-        `${monitor.name}\n${monitor.url}\n\n${body}`,
+        authAlert
+          ? `${monitor.name}\n${body}`
+          : row.private_summary ||
+              (monitor.authProfileId && monitor.notificationPolicy !== "FULL")
+            ? `${monitor.name}有变化，请打开 PageSentinel 查看。`
+            : `${monitor.name}\n${monitor.url}\n\n${body}`,
         "utf8",
       );
       const payload =
@@ -66,7 +84,9 @@ export class NotificationWorker {
           method: "POST",
           headers: {
             "content-type": "text/plain; charset=utf-8",
-            title: "PageSentinel: page changed",
+            title: authAlert
+              ? "PageSentinel: login required"
+              : "PageSentinel: page changed",
             ...(this.options.token
               ? { Authorization: `Bearer ${this.options.token}` }
               : {}),
@@ -79,20 +99,32 @@ export class NotificationWorker {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         this.db
           .prepare(
-            "UPDATE change_events SET notification_status = 'SENT', notification_attempts = notification_attempts + 1, notification_error = NULL WHERE id = ?",
+            authAlert
+              ? "UPDATE auth_alerts SET status='SENT',attempts=attempts+1 WHERE id=?"
+              : "UPDATE change_events SET notification_status = 'SENT', notification_attempts = notification_attempts + 1, notification_error = NULL WHERE id = ?",
           )
-          .run(event.id);
+          .run(row.id);
       } catch {
         const delay = Math.min(
           6 * 60 * 60_000,
           (this.options.retryBaseMs ?? 30_000) *
-            2 ** Math.min(event.notificationAttempts, 10),
+            2 **
+              Math.min(
+                authAlert ? row.attempts : event!.notificationAttempts,
+                10,
+              ),
         );
         this.db
           .prepare(
-            "UPDATE change_events SET notification_attempts = notification_attempts + 1, next_notification_at = ?, notification_error = ? WHERE id = ?",
+            authAlert
+              ? "UPDATE auth_alerts SET attempts=attempts+1,next_attempt_at=? WHERE id=?"
+              : "UPDATE change_events SET notification_attempts = notification_attempts + 1, next_notification_at = ?, notification_error = ? WHERE id = ?",
           )
-          .run(Date.now() + delay, "ntfy 推送失败，将自动重试。", event.id);
+          .run(
+            ...(authAlert
+              ? [Date.now() + delay, row.id]
+              : [Date.now() + delay, "ntfy 推送失败，将自动重试。", row.id]),
+          );
       }
     }
   }

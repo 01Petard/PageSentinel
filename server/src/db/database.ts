@@ -1,12 +1,14 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Monitor, CheckRun, ChangeEvent } from "../../../shared/types.js";
 
 export type Db = Database.Database;
 export function openDatabase(path: string): Db {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  if (path !== ":memory:")
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new Database(path);
+  if (path !== ":memory:") chmodSync(path, 0o600);
   db.pragma("foreign_keys = ON");
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
@@ -49,6 +51,24 @@ export function openDatabase(path: string): Db {
   `);
   // Existing installations are upgraded in place without replacing their data.
   db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS app_security (id INTEGER PRIMARY KEY CHECK(id=1), auth_required INTEGER NOT NULL DEFAULT 0);
+      INSERT OR IGNORE INTO app_security(id,auth_required) VALUES(1,0);
+      CREATE TABLE IF NOT EXISTS auth_profiles (
+        id TEXT PRIMARY KEY, config_json TEXT NOT NULL, source TEXT,
+        status TEXT NOT NULL DEFAULT 'EMPTY', revision INTEGER NOT NULL DEFAULT 1,
+        state_version INTEGER NOT NULL DEFAULT 0, ciphertext TEXT, nonce TEXT, tag TEXT,
+        verified_at INTEGER, error_code TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS auth_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+        profile_id TEXT NOT NULL REFERENCES auth_profiles(id) ON DELETE CASCADE,
+        blocked_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING',
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL, UNIQUE(monitor_id,blocked_at)
+      );
+    `);
     const columns = new Set(
       (
         db.prepare("PRAGMA table_info(check_runs)").all() as { name: string }[]
@@ -60,6 +80,21 @@ export function openDatabase(path: string): Db {
       );
     if (!columns.has("summary"))
       db.exec("ALTER TABLE check_runs ADD COLUMN summary TEXT");
+    if (!columns.has("private_summary"))
+      db.exec(
+        "ALTER TABLE check_runs ADD COLUMN private_summary INTEGER NOT NULL DEFAULT 0",
+      );
+    const eventColumns = new Set(
+      (
+        db.prepare("PRAGMA table_info(change_events)").all() as {
+          name: string;
+        }[]
+      ).map((r) => r.name),
+    );
+    if (!eventColumns.has("private_summary"))
+      db.exec(
+        "ALTER TABLE change_events ADD COLUMN private_summary INTEGER NOT NULL DEFAULT 0",
+      );
     const monitorColumns = new Set(
       (
         db.prepare("PRAGMA table_info(monitors)").all() as { name: string }[]
@@ -67,7 +102,24 @@ export function openDatabase(path: string): Db {
     );
     if (!monitorColumns.has("last_success_at"))
       db.exec("ALTER TABLE monitors ADD COLUMN last_success_at INTEGER");
-    db.pragma("user_version = 2");
+    if (!monitorColumns.has("auth_profile_id"))
+      db.exec(
+        "ALTER TABLE monitors ADD COLUMN auth_profile_id TEXT REFERENCES auth_profiles(id) ON DELETE RESTRICT",
+      );
+    if (!monitorColumns.has("auth_success_selector"))
+      db.exec("ALTER TABLE monitors ADD COLUMN auth_success_selector TEXT");
+    if (!monitorColumns.has("auth_blocked_code"))
+      db.exec("ALTER TABLE monitors ADD COLUMN auth_blocked_code TEXT");
+    if (!monitorColumns.has("auth_blocked_at"))
+      db.exec("ALTER TABLE monitors ADD COLUMN auth_blocked_at INTEGER");
+    if (!monitorColumns.has("notification_policy"))
+      db.exec(
+        "ALTER TABLE monitors ADD COLUMN notification_policy TEXT NOT NULL DEFAULT 'SUMMARY'",
+      );
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_monitor_auth ON monitors(auth_profile_id)",
+    );
+    db.pragma("user_version = 3");
   })();
   return db;
 }
@@ -87,6 +139,11 @@ export function monitorFromRow(row: any): Monitor {
     lastStatus: row.last_status,
     lastError: row.last_error,
     failureCount: row.failure_count,
+    authProfileId: row.auth_profile_id ?? null,
+    authSuccessSelector: row.auth_success_selector ?? undefined,
+    authBlockedCode: row.auth_blocked_code ?? null,
+    authBlockedAt: row.auth_blocked_at ?? null,
+    notificationPolicy: row.notification_policy ?? "SUMMARY",
   };
 }
 export function checkFromRow(row: any): CheckRun {

@@ -22,12 +22,15 @@ import {
   ArrowUpRight,
 } from "lucide-vue-next";
 import type {
+  AuthProfileInput,
   Monitor,
   MonitorInput,
   ExtractResult,
   Rule,
+  AuthProfileSummary,
 } from "../../../shared/types";
-import { api, formatInterval } from "../api";
+import { api, formatInterval, managementSession } from "../api";
+import AuthProfileEditor from "./AuthProfileEditor.vue";
 
 const props = defineProps<{ show: boolean; monitor?: Monitor | null }>();
 const emit = defineEmits<{ "update:show": [boolean]; saved: [Monitor] }>();
@@ -45,6 +48,53 @@ const ignoreText = ref(""),
   preview = ref<ExtractResult | null>(null),
   testError = ref(""),
   saveError = ref("");
+const profiles = ref<AuthProfileSummary[]>([]);
+const authEditor = ref(false),
+  editingProfile = ref<AuthProfileSummary | null>(null);
+const initialProfile = computed<Partial<AuthProfileInput>>(() => {
+  try {
+    return {
+      name: `${form.name || "站点"} 登录`.slice(0, 120),
+      loginUrl: form.url.trim(),
+      verificationUrl: form.url.trim(),
+      allowedHosts: [new URL(form.url.trim()).hostname],
+    };
+  } catch {
+    return { name: `${form.name || "站点"} 登录`.slice(0, 120) };
+  }
+});
+function editProfile(profile: AuthProfileSummary | null) {
+  editingProfile.value = profile;
+  authEditor.value = true;
+}
+function profileSaved(profile: AuthProfileSummary) {
+  profiles.value = [
+    ...profiles.value.filter((p) => p.id !== profile.id),
+    profile,
+  ];
+  if (profile.status === "READY") form.authProfileId = profile.id;
+}
+const profileOptions = computed(() => [
+  { label: "不使用登录身份", value: "" },
+  ...profiles.value.map((p) => ({
+    label: `${p.name}${p.status === "READY" ? "" : "（需要登录）"}`,
+    value: p.id,
+    disabled: p.status !== "READY" && p.id !== props.monitor?.authProfileId,
+  })),
+]);
+const selectedProfile = computed(() =>
+  profiles.value.find((p) => p.id === form.authProfileId),
+);
+const domainMatched = computed(() => {
+  try {
+    return (
+      !selectedProfile.value ||
+      selectedProfile.value.allowedHosts.includes(new URL(form.url).hostname)
+    );
+  } catch {
+    return !form.authProfileId;
+  }
+});
 const testing = ref(false),
   saving = ref(false),
   testedSignature = ref("");
@@ -68,6 +118,8 @@ const rule = computed<Rule>(() => ({
   url: form.url.trim(),
   mode: form.mode,
   selector: form.selector.trim(),
+  authProfileId: form.authProfileId || null,
+  authSuccessSelector: form.authSuccessSelector?.trim() || "",
   ...(form.mode === "TEXT"
     ? {
         ignoreSelectors: ignoreText.value
@@ -104,7 +156,19 @@ const validRule = computed(() => {
 watch(
   () => props.show,
   (show) => {
-    if (!show) return;
+    if (!show) {
+      preview.value = null;
+      return;
+    }
+    if (managementSession.required)
+      void api
+        .profiles()
+        .then((items) => {
+          profiles.value = items;
+        })
+        .catch((e) => {
+          saveError.value = (e as Error).message;
+        });
     const m = props.monitor;
     Object.assign(form, {
       name: m?.name ?? "",
@@ -115,6 +179,9 @@ watch(
       linkSelector: m?.linkSelector ?? "",
       intervalMinutes: m?.intervalMinutes ?? 30,
       enabled: m?.enabled ?? true,
+      authProfileId: m?.authProfileId ?? "",
+      authSuccessSelector: m?.authSuccessSelector ?? "",
+      notificationPolicy: m?.notificationPolicy ?? "SUMMARY",
     });
     ignoreText.value = m?.ignoreSelectors?.join("\n") ?? "";
     const interval = m?.intervalMinutes ?? 30;
@@ -161,6 +228,7 @@ async function save() {
       name: form.name.trim(),
       intervalMinutes: selectedInterval.value,
       enabled: form.enabled,
+      notificationPolicy: form.notificationPolicy,
     };
     const result = props.monitor
       ? await api.update(props.monitor.id, {
@@ -277,12 +345,89 @@ async function save() {
               :disabled="saving"
           /></NFormItem>
         </template>
+        <section v-if="managementSession.required" class="auth-binding">
+          <NFormItem label="登录身份"
+            ><select
+              v-model="form.authProfileId"
+              class="auth-select"
+              :disabled="saving"
+              aria-label="登录身份"
+            >
+              <option
+                v-for="p in profileOptions"
+                :key="p.value"
+                :value="p.value"
+                :disabled="'disabled' in p && p.disabled"
+              >
+                {{ p.label }}
+              </option>
+            </select></NFormItem
+          >
+          <div class="auth-actions">
+            <NButton :disabled="saving || testing" @click="editProfile(null)"
+              >新建登录身份</NButton
+            >
+            <NButton
+              v-if="selectedProfile"
+              :disabled="saving || testing"
+              @click="editProfile(selectedProfile)"
+              >管理当前身份 / 登录</NButton
+            >
+          </div>
+          <p class="field-help">
+            需要登录的页面请先在专用窗口登录或导入状态。新身份验证成功后会自动选中，当前监控表单会保留。
+          </p>
+          <template v-if="form.authProfileId">
+            <p class="field-help">
+              {{
+                domainMatched
+                  ? "目标主机在身份批准范围内。"
+                  : "目标主机未被此身份批准，请调整 URL 或身份配置。"
+              }}
+              改变绑定会重新建立基线。
+            </p>
+            <NFormItem label="本页面成功标记 CSS（留空沿用身份规则）"
+              ><NInput
+                v-model:value="form.authSuccessSelector"
+                :input-props="{ 'aria-label': '本页面成功标记 CSS' }"
+                :disabled="saving"
+                placeholder="登录标记和提取选择器分别验证"
+            /></NFormItem>
+            <NFormItem label="私密通知内容"
+              ><select
+                v-model="form.notificationPolicy"
+                class="auth-select"
+                :disabled="saving"
+                aria-label="私密通知内容"
+              >
+                <option value="SUMMARY">
+                  仅摘要（默认，不发送 URL 和私人正文）
+                </option>
+                <option value="FULL">
+                  允许推送完整变化（包含私人内容与 URL）
+                </option>
+              </select></NFormItem
+            >
+          </template>
+        </section>
+        <NAlert v-else type="info" :show-icon="false" class="auth-binding">
+          <strong>这个页面需要登录？</strong>
+          <p>
+            当前仅以匿名方式访问。请先启用登录身份保护，再配置专用窗口登录或导入状态。
+          </p>
+          <RouterLink
+            to="/auth-profiles"
+            target="_blank"
+            rel="noopener noreferrer"
+            >在新页面查看启用步骤</RouterLink
+          >
+        </NAlert>
         <div class="preview-section">
           <div class="section-toolbar">
             <h3>提取预览</h3>
             <NButton
               :loading="testing"
-              :disabled="!validRule || saving"
+              :disabled="!validRule || saving || !domainMatched"
               @click="testRule"
               ><template #icon><FlaskConical :size="16" /></template
               >{{ testing ? "正在采集" : "测试规则" }}</NButton
@@ -389,7 +534,11 @@ async function save() {
             type="primary"
             :loading="saving"
             :disabled="
-              !form.name.trim() || !validRule || !validInterval || testing
+              !form.name.trim() ||
+              !validRule ||
+              !validInterval ||
+              testing ||
+              !domainMatched
             "
             @click="save"
             >{{ monitor ? "保存修改" : "创建监控" }}</NButton
@@ -398,4 +547,11 @@ async function save() {
       >
     </NDrawerContent>
   </NDrawer>
+  <AuthProfileEditor
+    v-if="authEditor"
+    v-model:show="authEditor"
+    :profile="editingProfile"
+    :initial="initialProfile"
+    @saved="profileSaved"
+  />
 </template>

@@ -14,7 +14,7 @@ export class Scheduler {
     if (!slots) return;
     const due = this.db
       .prepare(
-        "SELECT id FROM monitors WHERE enabled = 1 AND next_run_at <= ? ORDER BY next_run_at",
+        "SELECT id FROM monitors WHERE enabled = 1 AND auth_blocked_code IS NULL AND next_run_at <= ? ORDER BY next_run_at",
       )
       .all(Date.now()) as { id: string }[];
     let started = 0;

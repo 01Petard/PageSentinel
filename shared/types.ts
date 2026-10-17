@@ -4,6 +4,51 @@ export enum MonitorMode {
 }
 export type Mode = "TEXT" | "LIST";
 export type RunStatus = "BASELINE" | "UNCHANGED" | "CHANGED" | "FAILED";
+export type AuthRunStatus = "AUTH_REQUIRED" | "AUTH_UNVERIFIED";
+export type AuthStatus = "EMPTY" | "READY" | "NEEDS_LOGIN";
+export type AccountAction = "SAME_ACCOUNT" | "SWITCH_ACCOUNT";
+export interface AuthProfileInput {
+  name: string;
+  loginUrl: string;
+  verificationUrl: string;
+  allowedHosts: string[];
+  successSelector: string;
+  loginUrlPrefix?: string;
+}
+export interface AuthProfileSummary extends AuthProfileInput {
+  id: string;
+  source: "IMPORT" | "CAPTURE" | null;
+  status: AuthStatus;
+  revision: number;
+  stateVersion: number;
+  verifiedAt: number | null;
+  errorCode: string | null;
+  boundCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+export type CaptureStatus =
+  | "WAITING_HELPER"
+  | "LOGGING_IN"
+  | "SAVE_REQUESTED"
+  | "VERIFYING"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "EXPIRED"
+  | "FAILED";
+export interface CaptureSummary {
+  id: string;
+  profileId: string;
+  status: CaptureStatus;
+  expiresAt: number;
+  errorCode: string | null;
+}
+export interface ManagementSession {
+  required: boolean;
+  unlocked: boolean;
+  csrfToken?: string;
+  ntfyConfigured?: boolean;
+}
 export type NotificationStatus = "PENDING" | "SENT";
 
 export interface Rule {
@@ -13,11 +58,14 @@ export interface Rule {
   ignoreSelectors?: string[];
   titleSelector?: string;
   linkSelector?: string;
+  authProfileId?: string | null;
+  authSuccessSelector?: string;
 }
 export interface MonitorInput extends Rule {
   name: string;
   intervalMinutes: number;
   enabled: boolean;
+  notificationPolicy?: "SUMMARY" | "FULL";
 }
 export interface ListItem {
   key: string;
@@ -46,6 +94,8 @@ export interface Monitor extends MonitorInput {
   lastError: string | null;
   failureCount: number;
   running?: boolean;
+  authBlockedCode?: AuthRunStatus | null;
+  authBlockedAt?: number | null;
 }
 export type CheckSource =
   | "AUTO"
@@ -54,13 +104,20 @@ export type CheckSource =
   | "RULE_EDIT"
   | "MANUAL_BATCH"
   | "LEGACY"
-  | "TASK_CONTROL";
+  | "TASK_CONTROL"
+  | "AUTH_CONTROL";
 export interface CurrentContent {
   content: ExtractResult | null;
   capturedAt: number | null;
   thumbnailAt: number | null;
 }
-export type CheckRunStatus = RunStatus | "ENABLED" | "DISABLED";
+export type CheckRunStatus =
+  | RunStatus
+  | AuthRunStatus
+  | "ENABLED"
+  | "DISABLED"
+  | "AUTH_UPDATED"
+  | "AUTH_REVOKED";
 export interface CheckRun {
   id: number;
   monitorId: string;

@@ -6,6 +6,7 @@ import "./style.css";
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: "/auth-profiles", component: () => import("./views/AuthProfiles.vue") },
     { path: "/", component: () => import("./views/MonitorList.vue") },
     {
       path: "/monitors/:id",
